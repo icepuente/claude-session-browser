@@ -341,6 +341,7 @@ BUDDY_ANIMS = _decode_buddy_anims()
 # Mapping von "detektiertem Zustand" -> Animations-Name.
 BUDDY_STATE_MAP = {
     "limit":    "limit",             # Rate/Usage-Limit erreicht (sauer!)
+    "error":    "expression surprise",  # Pi meldet einen fehlgeschlagenen Lauf
     "active":   "work coding",       # Claude schreibt gerade (mtime < 3 s)
     "thinking": "work think",        # kurz danach, wenn's noch zappelt
     "awaiting_approval": "allow",    # Claude will Tool-Use, braucht dein Y/N
@@ -1400,6 +1401,88 @@ _CLAUDE_CACHE = {"t": 0.0, "active": False, "keys": frozenset()}
 # faelschlich als eigener Fenster aussortiert wird.
 _OWN_APP_TITLE_EXACT = "claude session browser"
 
+# Pi-Integration: die Pi-Extension pi-csb-buddy schreibt fuer jede pi-Session
+# mit dem Provider claude-bridge eine <pid>.json mit Zustand + Heartbeat.
+# Schema: https://github.com/icepuente/pi-csb-buddy
+PI_BUDDY_DIR = os.environ.get("CSB_PI_BUDDY_DIR") or os.path.join(
+    HOME, ".claude", "csb_pi_sessions")
+PI_BUDDY_FRESH_S = 15.0
+PI_BUDDY_STATES = {"idle", "thinking", "active", "awaiting_approval",
+                   "waiting", "error", "limit"}
+
+
+def _pi_claude_bridge_sessions(processes, now):
+    """Pi-Sessions mit frischem Heartbeat UND lebendem PID.
+
+    Die Pi-Extension meldet nur Metadaten, keine Prompts oder Zugangsdaten.
+    Alte Dateien nach einem Crash reichen nicht aus, um den Buddy zu zeigen.
+    """
+    sessions = []
+    for name, _path, pid in processes:
+        if name not in ("node.exe", "bun.exe", "pi.exe"):
+            continue
+        try:
+            with open(os.path.join(PI_BUDDY_DIR, f"{pid}.json"),
+                      encoding="utf-8") as fh:
+                raw = fh.read(4097)
+            if len(raw) > 4096:
+                continue
+            data = json.loads(raw)
+            if (not isinstance(data, dict) or data.get("version") != 1
+                    or type(data.get("pid")) is not int or data["pid"] != pid
+                    or data.get("provider") != "claude-bridge"):
+                continue
+            # Zeiten: int/float, aber kein bool (True waere sonst 1.0 s).
+            updated = data.get("updated_at")
+            if (not isinstance(updated, (int, float)) or isinstance(updated, bool)
+                    or not 0 <= now - updated <= PI_BUDDY_FRESH_S):
+                continue
+            activity = data.get("state", "idle")
+            if not isinstance(activity, str) or activity not in PI_BUDDY_STATES:
+                activity = "idle"
+            activity_at = data.get("activity_at", updated)
+            if (not isinstance(activity_at, (int, float))
+                    or isinstance(activity_at, bool)
+                    or not 0 <= activity_at <= updated):
+                activity_at = updated
+            sessions.append({"pid": pid, "state": activity,
+                             "activity_at": activity_at})
+        except (OSError, ValueError, TypeError):
+            continue
+    return sessions
+
+
+def _pi_claude_bridge_keys(processes, now):
+    return {("pi", session["pid"])
+            for session in _pi_claude_bridge_sessions(processes, now)}
+
+
+def _pi_buddy_state():
+    """Aktuelle Pi-Aktivitaet vor der Transkript-Erkennung anzeigen.
+
+    Mehrere Sessions: Rueckfragen/Limits zuerst, dann Fehler, laufende Arbeit
+    und zuletzt wartende Sessions. Gleichstand: letzte Zustandsaenderung.
+    Heartbeats erneuern nur die Anwesenheit, nicht die Leerlauf-Zeit.
+    """
+    _claude_context_active()
+    sessions = _CLAUDE_CACHE.get("pi_sessions", [])
+    if not sessions:
+        return None
+    priority = {"awaiting_approval": 4, "limit": 4, "error": 3,
+                "active": 2, "thinking": 2, "waiting": 1,
+                "recent": 0, "idle": 0, "sleep": -1}
+    candidates = []
+    now = time.time()
+    for session in sessions:
+        activity = session["state"]
+        age = max(0, now - session["activity_at"])
+        if activity == "waiting" and age >= 180:
+            activity = "recent" if age < 300 else "idle"
+        if activity == "idle" and age >= 900:
+            activity = "sleep"
+        candidates.append((priority[activity], session["activity_at"], activity))
+    return max(candidates)[2]
+
 
 def _claude_context_active():
     """True wenn ein echtes Claude-CLI-Terminal offen (oder sehr kuerzlich
@@ -1415,13 +1498,19 @@ def _claude_context_active():
         return _CLAUDE_CACHE["active"]
     _CLAUDE_CACHE["t"] = now
     keys = set()
+    pi_sessions = []
     try:
+        # 0) Pi-Sessions mit claude-bridge (pi-csb-buddy-Heartbeat) zaehlen
+        # wie ein offenes Claude-Terminal.
+        processes = _win_process_names_with_path()
+        pi_sessions = _pi_claude_bridge_sessions(processes, now)
+        keys.update(("pi", session["pid"]) for session in pi_sessions)
         # 1) claude.exe direkt (CLI-Installation). ABSICHTLICH nicht triggern
         # fuer die Anthropic Claude Desktop-App (%LOCALAPPDATA%\AnthropicClaude\
         # claude.exe) - das ist ein Chat-Client, kein CLI, und hat nichts mit
         # unserer JSONL-Detection zu tun. Wir filtern nach Prozesspfad falls
         # verfuegbar.
-        for name, path, pid in _win_process_names_with_path():
+        for name, path, pid in processes:
             if name != "claude.exe":
                 continue
             if path and "anthropicclaude" in path.lower():
@@ -1473,6 +1562,7 @@ def _claude_context_active():
         pass
     _CLAUDE_CACHE["keys"] = frozenset(keys)
     _CLAUDE_CACHE["active"] = bool(keys)
+    _CLAUDE_CACHE["pi_sessions"] = pi_sessions
     return _CLAUDE_CACHE["active"]
 
 
@@ -2488,6 +2578,9 @@ class BuddyController:
                           "responding_text", "thinking", "user_sent_prompt"}
 
         def detect_state():
+            pi_activity = _pi_buddy_state()
+            if pi_activity is not None:
+                return pi_activity
             now = time.time()
             # mtime-Check: immer schnell (alle 500ms)
             if now - state["last_mtime_check"] > 0.5:
