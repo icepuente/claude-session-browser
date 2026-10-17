@@ -144,6 +144,14 @@ Claude Code reports it itself. That adds a single hook to
 `~/.claude/settings.json`; your other hooks stay untouched, and it applies to
 sessions you start afterwards.
 
+**pi sessions, too.** If you run Claude through [pi](https://github.com/earendil-works/pi)
+with the [claude-bridge](https://github.com/elidickinson/pi-claude-bridge)
+provider, turn on *Show pi sessions in the buddy* in the **Buddy** tab.
+That installs the pi extension
+[pi-csb-buddy](https://github.com/icepuente/pi-csb-buddy) with `pi install`;
+it reports each session's state — never prompts or replies — and Clawd acts it
+out like a Claude Code terminal. Details in [docs/pi-buddy.md](docs/pi-buddy.md).
+
 ## Clawdmeter
 
 *Optional, and someone else's project — skip this if you don't own the device.*
@@ -225,6 +233,7 @@ is a complete example.
 | `~/.claude/session_titles.json` | Titles you renamed yourself |
 | `~/.claude/settings.json` | Claude Code's own settings — only touched if you enable the hook |
 | `~/.claude/csb_hooks/` | What the hook reports, one small file per session |
+| `~/.claude/csb_pi_sessions/` | What pi-csb-buddy reports, one small file per pi session |
 
 </details>
 
