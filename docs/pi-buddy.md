@@ -11,7 +11,7 @@ what they are doing instead.
 Turn on **Show pi sessions in the buddy** in the **Buddy** tab. The app runs
 
 ```sh
-pi install npm:pi-csb-buddy@0.1.1
+pi install npm:pi-csb-buddy@0.1.3
 ```
 
 The version is pinned on purpose; a newer one arrives with an app update.
@@ -49,7 +49,7 @@ terminal for the *only while Claude Code is running* visibility and for snooze.
 | --- | --- | --- |
 | `thinking` | Turn started, thinking, between tools, compacting | Thinking |
 | `active` | Streaming text or tool calls, a tool running | Writing code |
-| `awaiting_approval` | A confirmation, selection or input prompt is open | Waiting for approval |
+| `awaiting_approval` | A confirmation, selection or input prompt is open, or the run settled on a reply that asks you something | Waiting for approval |
 | `waiting` | The run settled | Done, then idle after a few minutes |
 | `error` | A tool or the provider failed | Surprise |
 | `limit` | The provider error looks like a rate or usage limit | Out of quota |

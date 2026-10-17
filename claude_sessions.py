@@ -255,7 +255,7 @@ def hooks_einrichten(an):
 # pi die Extension pi-csb-buddy (siehe _pi_claude_bridge_sessions). Die App
 # installiert sie auf Wunsch ueber pi's eigenen Paketmanager - fest auf eine
 # gepruefte Version, damit nicht jede neue Version ungesehen mitkommt.
-PI_BUDDY_PACKAGE = "npm:pi-csb-buddy@0.1.1"
+PI_BUDDY_PACKAGE = "npm:pi-csb-buddy@0.1.3"
 _PI_BUDDY_QUELLE = re.compile(r"(?:^|[:/])pi-csb-buddy(?:$|[@#]|\.git$)")
 
 
