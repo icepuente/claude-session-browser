@@ -250,6 +250,70 @@ def hooks_einrichten(an):
     return True
 
 
+# ---- Pi-Extension fuer den Buddy ------------------------------------------
+# Damit pi-Sessions mit dem Provider claude-bridge den Buddy steuern, braucht
+# pi die Extension pi-csb-buddy (siehe _pi_claude_bridge_sessions). Die App
+# installiert sie auf Wunsch ueber pi's eigenen Paketmanager - fest auf eine
+# gepruefte Version, damit nicht jede neue Version ungesehen mitkommt.
+PI_BUDDY_PACKAGE = "npm:pi-csb-buddy@0.1.1"
+_PI_BUDDY_QUELLE = re.compile(r"(?:^|[:/])pi-csb-buddy(?:$|[@#]|\.git$)")
+
+
+def _pi_befehl():
+    """Pfad der pi-CLI (unter Windows pi.cmd) oder None."""
+    return shutil.which("pi")
+
+
+def pi_buddy_quelle():
+    """Unter welcher Quelle steht pi-csb-buddy in pi's Einstellungen?
+
+    Erkennt auch eine von Hand installierte Fassung (git:, andere Version).
+    "" heisst: nicht installiert.
+    """
+    agent = (os.environ.get("PI_CODING_AGENT_DIR")
+             or os.path.join(HOME, ".pi", "agent"))
+    try:
+        with open(os.path.join(agent, "settings.json"), encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return ""
+    pakete = d.get("packages") if isinstance(d, dict) else None
+    for p in pakete if isinstance(pakete, list) else []:
+        quelle = p.get("source") if isinstance(p, dict) else p
+        if isinstance(quelle, str) and _PI_BUDDY_QUELLE.search(quelle):
+            return quelle
+    return ""
+
+
+def pi_buddy_einrichten(an):
+    """pi-csb-buddy mit `pi install` einrichten oder mit `pi remove` entfernen.
+
+    Rueckgabe: "" bei Erfolg, "no_pi" ohne pi-CLI, sonst die letzte Zeile
+    von pi's Fehlerausgabe.
+    """
+    pi = _pi_befehl()
+    if not pi:
+        return "no_pi"
+    if an:
+        args = ["install", PI_BUDDY_PACKAGE]
+    else:
+        quelle = pi_buddy_quelle()
+        if not quelle:
+            return ""
+        args = ["remove", quelle]
+    try:
+        r = subprocess.run([pi] + args, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=300,
+                           stdin=subprocess.DEVNULL,
+                           creationflags=0x08000000 if _IS_WIN else 0)
+    except (OSError, subprocess.SubprocessError) as e:
+        return str(e) or "error"
+    if r.returncode != 0:
+        zeilen = (r.stderr or r.stdout or "").strip().splitlines()
+        return zeilen[-1] if zeilen else "exit %d" % r.returncode
+    return ""
+
+
 DEFAULT_SETTINGS = {
     "hide_home": False,
     "hidden_folders": [],
@@ -4081,6 +4145,16 @@ class Api:
         ok = hooks_einrichten(bool(on))
         return {"ok": ok, "on": hooks_eingerichtet()}
 
+    def pi_buddy_state(self):
+        return {"pi": bool(_pi_befehl()), "source": pi_buddy_quelle(),
+                "package": PI_BUDDY_PACKAGE}
+
+    def pi_buddy_toggle(self, on):
+        fehler = pi_buddy_einrichten(bool(on))
+        r = self.pi_buddy_state()
+        r["error"] = fehler
+        return r
+
     def set_language(self, code):
         """Sprache umstellen. Gibt Sprache + Tabelle zurueck, damit die
         Oberflaeche sich sofort neu aufbauen kann - ohne Neustart."""
@@ -6943,6 +7017,21 @@ async function renderBuddy(){
       </div>
       <div class="ba-hint">Passt zu jedem Fenster, dessen Titel den eingegebenen Text enthält (Groß-/Kleinschreibung egal).</div>
     </div>
+    </div>
+
+    <div class="card">
+      <div class="row2">
+        <div><div class="lbl">pi-Sessions im Buddy zeigen</div>
+          <div class="desc">Der Buddy zeigt auch, was <code>pi</code> mit dem Provider <code>claude-bridge</code> gerade tut.</div>
+          <details class="mehr"><summary>Was das genau tut</summary>
+            <div class="desc">Installiert die pi-Extension <code>pi-csb-buddy</code> über den Paketmanager von pi. Sie schreibt je pi-Session nur Zustand und Zeitstempel nach <code>~/.claude/csb_pi_sessions/</code> – keine Prompts, keine Antworten. Ausschalten entfernt sie wieder.</div>
+          </details>
+          <div class="desc" id="pi-buddy-hint"></div></div>
+        <div class="toggle" id="pi-buddy-toggle" onclick="togglePiBuddy(this)"></div>
+      </div>
+    </div>
+
+    <div class="ba-sub ${b.enabled?'':'off'}">
 
     <div class="card">
       <h2>${ic('wand')}Aussehen &amp; Position</h2>
@@ -7015,6 +7104,9 @@ async function renderBuddy(){
     </div>
   `;
   translateDom(document.getElementById('buddy-panel'));
+  // Der pi-Schalter steht zwischen zwei .ba-sub-Bloecken statt darin: die
+  // Extension laesst sich auch bei ausgeschaltetem Buddy entfernen.
+  refreshPiBuddy();
 
   // BMP-Previews fuer alle Anims nachladen (nur wenn nicht im Cache)
   document.querySelectorAll('#buddy-panel img[data-anim]').forEach(async img=>{
@@ -7678,6 +7770,38 @@ async function toggleHooks(el){
   toast(an ? t('Hook eingerichtet ✓ – gilt ab der nächsten Claude-Code-Sitzung')
            : t('Hook entfernt'));
   refreshHooks();
+}
+// ---- pi-Extension pi-csb-buddy ----
+let PI_BUDDY_BUSY = false;
+function showPiBuddy(r){
+  const el = document.getElementById('pi-buddy-toggle');
+  const hint = document.getElementById('pi-buddy-hint');
+  if(!el || !r) return;
+  el.classList.toggle('on', !!r.source);
+  if(!hint) return;
+  if(r.source) hint.textContent = t('Installiert ({src}). Gilt für neue pi-Sitzungen oder nach /reload.', {src: r.source});
+  else if(!r.pi) hint.textContent = t('pi wurde nicht gefunden. Erst pi installieren, dann hier einschalten.');
+  else hint.textContent = '';
+}
+async function refreshPiBuddy(){
+  if(PI_BUDDY_BUSY || !document.getElementById('pi-buddy-toggle')) return;
+  try{ showPiBuddy(await api.pi_buddy_state()); }catch(e){}
+}
+async function togglePiBuddy(el){
+  if(PI_BUDDY_BUSY) return;
+  const an = !el.classList.contains('on');
+  PI_BUDDY_BUSY = true;
+  el.classList.toggle('on', an);
+  const hint = document.getElementById('pi-buddy-hint');
+  if(hint) hint.textContent = an ? t('Wird mit pi installiert …') : t('Wird mit pi entfernt …');
+  let r = null;
+  try{ r = await api.pi_buddy_toggle(an); }catch(e){}
+  PI_BUDDY_BUSY = false;
+  if(!r){ el.classList.toggle('on', !an); if(hint) hint.textContent = ''; return; }
+  showPiBuddy(r);
+  if(r.error === 'no_pi') return;
+  if(r.error){ toast(t('pi meldet: {msg}', {msg: r.error})); return; }
+  toast(an ? t('pi-csb-buddy installiert ✓') : t('pi-csb-buddy entfernt'));
 }
 
 async function setAccent(c){applyAccent(c); ingest(await api.update_setting('accent',c)); renderSettings();}

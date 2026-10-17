@@ -792,6 +792,34 @@ TRANSLATIONS = {
         "Hook entfernt": "Hook removed",
         "Hook konnte nicht gesetzt werden": "Couldn't set the hook",
 
+        # ---- pi-Extension pi-csb-buddy -----------------------------------
+        # Saetze im Markup sind von <code> unterbrochen - Bruchstuecke in
+        # derselben Reihenfolge wie im Englischen.
+        "pi-Sessions im Buddy zeigen": "Show pi sessions in the buddy",
+        "Der Buddy zeigt auch, was": "The buddy also shows what",
+        "mit dem Provider": "is doing with the",
+        "claude-bridge": "claude-bridge",
+        "gerade tut.": "provider.",
+        "Installiert die pi-Extension": "Installs the pi extension",
+        "pi-csb-buddy": "pi-csb-buddy",
+        "über den Paketmanager von pi. Sie schreibt je pi-Session nur "
+        "Zustand und Zeitstempel nach":
+            "through pi's package manager. Per pi session it writes only the "
+            "state and timestamps to",
+        "~/.claude/csb_pi_sessions/": "~/.claude/csb_pi_sessions/",
+        "– keine Prompts, keine Antworten. Ausschalten entfernt sie wieder.":
+            "– no prompts, no replies. Turning this off removes it again.",
+        "Installiert ({src}). Gilt für neue pi-Sitzungen oder nach /reload.":
+            "Installed ({src}). Applies to new pi sessions or after /reload.",
+        "pi wurde nicht gefunden. Erst pi installieren, dann hier "
+        "einschalten.":
+            "pi wasn't found. Install pi first, then switch this on.",
+        "Wird mit pi installiert …": "Installing with pi …",
+        "Wird mit pi entfernt …": "Removing with pi …",
+        "pi meldet: {msg}": "pi says: {msg}",
+        "pi-csb-buddy installiert ✓": "pi-csb-buddy installed ✓",
+        "pi-csb-buddy entfernt": "pi-csb-buddy removed",
+
         # ---- Rundgang nach einem Update ----------------------------------
         "Neu in dieser Version ✨": "New in this version ✨",
         "Neu:": "New:",
