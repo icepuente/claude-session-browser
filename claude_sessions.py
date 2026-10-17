@@ -1399,6 +1399,40 @@ _CLAUDE_CACHE = {"t": 0.0, "active": False, "keys": frozenset()}
 # Fenster mit Titel „⠂ Claude Session Browser Tool Development" nicht
 # faelschlich als eigener Fenster aussortiert wird.
 _OWN_APP_TITLE_EXACT = "claude session browser"
+PI_BUDDY_DIR = os.environ.get("CSB_PI_BUDDY_DIR") or os.path.join(
+    HOME, ".claude", "csb_pi_sessions")
+PI_BUDDY_FRESH_S = 15.0
+
+
+def _pi_claude_bridge_keys(processes, now):
+    """Private Pi-Integration: frischer Provider-Heartbeat UND lebender PID.
+
+    Die Pi-Extension meldet nur Metadaten, keine Prompts oder Zugangsdaten.
+    Alte Dateien nach einem Crash reichen nicht aus, um den Buddy zu zeigen.
+    """
+    keys = set()
+    for name, _path, pid in processes:
+        if name not in ("node.exe", "bun.exe", "pi.exe"):
+            continue
+        try:
+            with open(os.path.join(PI_BUDDY_DIR, f"{pid}.json"),
+                      encoding="utf-8") as fh:
+                raw = fh.read(4097)
+            if len(raw) > 4096:
+                continue
+            data = json.loads(raw)
+            if (not isinstance(data, dict) or data.get("version") != 1
+                    or type(data.get("pid")) is not int or data["pid"] != pid
+                    or data.get("provider") != "claude-bridge"):
+                continue
+            updated = data.get("updated_at")
+            if (type(updated) not in (int, float)
+                    or not 0 <= now - updated <= PI_BUDDY_FRESH_S):
+                continue
+            keys.add(("pi", pid))
+        except (OSError, ValueError, TypeError):
+            continue
+    return keys
 
 
 def _is_claude_desktop_path(path):
@@ -1428,7 +1462,9 @@ def _claude_context_active():
         # fuer die Claude Desktop-App, auch nicht als Windows-Store/MSIX-App.
         # Ohne lesbaren Pfad ist der gemeinsame Name kein CLI-Nachweis;
         # dann bleibt die Terminal-Erkennung weiter unten.
-        for name, path, pid in _win_process_names_with_path():
+        processes = _win_process_names_with_path()
+        keys.update(_pi_claude_bridge_keys(processes, now))
+        for name, path, pid in processes:
             if name != "claude.exe":
                 continue
             if not path or _is_claude_desktop_path(path):
