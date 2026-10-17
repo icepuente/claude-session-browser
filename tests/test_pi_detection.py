@@ -73,6 +73,79 @@ class PiDetectionTests(unittest.TestCase):
             self.assertTrue(app._claude_context_active())
             self.assertEqual(app._claude_context_keys(), frozenset({("pi", 123)}))
 
+    def state(self, now=None):
+        with patch.object(app, "_CLAUDE_CACHE", {"t": 0.0, "active": False, "keys": frozenset()}), \
+                patch.object(app.time, "time", return_value=self.now if now is None else now), \
+                patch.object(app, "_win_process_names_with_path", return_value=self.processes), \
+                patch.object(app, "_win_list_windows_hwnd", return_value=[]):
+            return app._pi_buddy_state()
+
+    def test_activity_selects_existing_animation(self):
+        expected = {"thinking": "work think", "active": "work coding",
+                    "awaiting_approval": "allow", "waiting": "done",
+                    "idle": "idle breathe", "error": "expression surprise",
+                    "limit": "limit"}
+        for state, animation in expected.items():
+            with self.subTest(state=state):
+                self.write(state=state, activity_at=99)
+                self.assertEqual(app.BUDDY_STATE_MAP[self.state()], animation)
+                self.assertIn(animation, app.BUDDY_ANIMS)
+
+    def test_legacy_presence_only_extension_is_idle(self):
+        self.write()
+        self.assertEqual(self.state(), "idle")
+
+    def test_invalid_activity_is_idle_and_does_not_hide_live_session(self):
+        for state in ("unknown", [], None):
+            with self.subTest(state=state):
+                self.write(state=state)
+                self.assertEqual(self.state(), "idle")
+
+    def test_invalid_activity_timestamp_falls_back_to_heartbeat(self):
+        for timestamp in (-1, 101, float("nan"), "old"):
+            with self.subTest(timestamp=timestamp):
+                self.write(state="waiting", activity_at=timestamp)
+                self.assertEqual(self.state(), "waiting")
+
+    def test_fresh_heartbeat_does_not_keep_finished_session_in_done_animation(self):
+        for age, expected in ((0, "waiting"), (180, "recent"),
+                              (300, "idle"), (900, "sleep")):
+            with self.subTest(age=age):
+                self.write(state="waiting", activity_at=100, updated_at=100 + age)
+                self.assertEqual(self.state(now=100 + age), expected)
+
+    def test_long_running_tool_does_not_become_idle_while_heartbeats_continue(self):
+        self.write(state="active", activity_at=1, updated_at=2000)
+        self.assertEqual(self.state(now=2000), "active")
+
+    def test_stale_or_exited_pi_does_not_override_native_animation(self):
+        self.write(state="active", updated_at=80)
+        self.assertIsNone(self.state())
+        self.write(state="active")
+        self.processes = []
+        self.assertIsNone(self.state())
+
+    def test_multiple_sessions_prioritize_attention_then_work_then_idle(self):
+        self.processes.append(("node.exe", "", 124))
+        other_path = os.path.join(self.directory.name, "124.json")
+        self.write(state="active", activity_at=99)
+        with open(other_path, "w") as fh:
+            json.dump(dict(version=1, pid=124, provider="claude-bridge",
+                           updated_at=100, state="awaiting_approval", activity_at=90), fh)
+        self.assertEqual(self.state(), "awaiting_approval")
+        with open(other_path, "w") as fh:
+            json.dump(dict(version=1, pid=124, provider="claude-bridge",
+                           updated_at=100, state="waiting", activity_at=100), fh)
+        self.assertEqual(self.state(), "active")
+
+    def test_old_sleeping_session_does_not_mask_new_idle_session(self):
+        self.processes.append(("node.exe", "", 124))
+        self.write(state="waiting", activity_at=1, updated_at=1000)
+        with open(os.path.join(self.directory.name, "124.json"), "w") as fh:
+            json.dump(dict(version=1, pid=124, provider="claude-bridge",
+                           updated_at=1000, state="idle", activity_at=999), fh)
+        self.assertEqual(self.state(now=1000), "idle")
+
 
 if __name__ == "__main__":
     unittest.main()

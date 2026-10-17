@@ -341,6 +341,7 @@ BUDDY_ANIMS = _decode_buddy_anims()
 # Mapping von "detektiertem Zustand" -> Animations-Name.
 BUDDY_STATE_MAP = {
     "limit":    "limit",             # Rate/Usage-Limit erreicht (sauer!)
+    "error":    "expression surprise",  # Pi meldet einen fehlgeschlagenen Lauf
     "active":   "work coding",       # Claude schreibt gerade (mtime < 3 s)
     "thinking": "work think",        # kurz danach, wenn's noch zappelt
     "awaiting_approval": "allow",    # Claude will Tool-Use, braucht dein Y/N
@@ -1402,15 +1403,17 @@ _OWN_APP_TITLE_EXACT = "claude session browser"
 PI_BUDDY_DIR = os.environ.get("CSB_PI_BUDDY_DIR") or os.path.join(
     HOME, ".claude", "csb_pi_sessions")
 PI_BUDDY_FRESH_S = 15.0
+PI_BUDDY_STATES = {"idle", "thinking", "active", "awaiting_approval",
+                   "waiting", "error", "limit"}
 
 
-def _pi_claude_bridge_keys(processes, now):
+def _pi_claude_bridge_sessions(processes, now):
     """Private Pi-Integration: frischer Provider-Heartbeat UND lebender PID.
 
     Die Pi-Extension meldet nur Metadaten, keine Prompts oder Zugangsdaten.
     Alte Dateien nach einem Crash reichen nicht aus, um den Buddy zu zeigen.
     """
-    keys = set()
+    sessions = []
     for name, _path, pid in processes:
         if name not in ("node.exe", "bun.exe", "pi.exe"):
             continue
@@ -1429,10 +1432,50 @@ def _pi_claude_bridge_keys(processes, now):
             if (type(updated) not in (int, float)
                     or not 0 <= now - updated <= PI_BUDDY_FRESH_S):
                 continue
-            keys.add(("pi", pid))
+            activity = data.get("state", "idle")
+            if not isinstance(activity, str) or activity not in PI_BUDDY_STATES:
+                activity = "idle"
+            activity_at = data.get("activity_at", updated)
+            if (type(activity_at) not in (int, float)
+                    or not 0 <= activity_at <= updated):
+                activity_at = updated
+            sessions.append({"pid": pid, "state": activity,
+                             "activity_at": activity_at})
         except (OSError, ValueError, TypeError):
             continue
-    return keys
+    return sessions
+
+
+def _pi_claude_bridge_keys(processes, now):
+    return {("pi", session["pid"])
+            for session in _pi_claude_bridge_sessions(processes, now)}
+
+
+def _pi_buddy_state():
+    """Aktuelle Pi-Aktivitaet vor alten Claude-Transkripten anzeigen.
+
+    Mehrere Sessions: Rueckfragen/Limits zuerst, dann Fehler, laufende Arbeit
+    und zuletzt wartende Sessions. Gleichstand: letzte Zustandsaenderung.
+    Heartbeats erneuern nur die Anwesenheit, nicht die Leerlauf-Zeit.
+    """
+    _claude_context_active()
+    sessions = _CLAUDE_CACHE.get("pi_sessions", [])
+    if not sessions:
+        return None
+    priority = {"awaiting_approval": 4, "limit": 4, "error": 3,
+                "active": 2, "thinking": 2, "waiting": 1,
+                "recent": 0, "idle": 0, "sleep": -1}
+    candidates = []
+    now = time.time()
+    for session in sessions:
+        activity = session["state"]
+        age = max(0, now - session["activity_at"])
+        if activity == "waiting" and age >= 180:
+            activity = "recent" if age < 300 else "idle"
+        if activity == "idle" and age >= 900:
+            activity = "sleep"
+        candidates.append((priority[activity], session["activity_at"], activity))
+    return max(candidates)[2]
 
 
 def _is_claude_desktop_path(path):
@@ -1457,13 +1500,15 @@ def _claude_context_active():
         return _CLAUDE_CACHE["active"]
     _CLAUDE_CACHE["t"] = now
     keys = set()
+    pi_sessions = []
     try:
         # 1) claude.exe direkt (CLI-Installation). ABSICHTLICH nicht triggern
         # fuer die Claude Desktop-App, auch nicht als Windows-Store/MSIX-App.
         # Ohne lesbaren Pfad ist der gemeinsame Name kein CLI-Nachweis;
         # dann bleibt die Terminal-Erkennung weiter unten.
         processes = _win_process_names_with_path()
-        keys.update(_pi_claude_bridge_keys(processes, now))
+        pi_sessions = _pi_claude_bridge_sessions(processes, now)
+        keys.update(("pi", session["pid"]) for session in pi_sessions)
         for name, path, pid in processes:
             if name != "claude.exe":
                 continue
@@ -1520,6 +1565,7 @@ def _claude_context_active():
         pass
     _CLAUDE_CACHE["keys"] = frozenset(keys)
     _CLAUDE_CACHE["active"] = bool(keys)
+    _CLAUDE_CACHE["pi_sessions"] = pi_sessions
     return _CLAUDE_CACHE["active"]
 
 
@@ -2535,6 +2581,9 @@ class BuddyController:
                           "responding_text", "thinking", "user_sent_prompt"}
 
         def detect_state():
+            pi_activity = _pi_buddy_state()
+            if pi_activity is not None:
+                return pi_activity
             now = time.time()
             # mtime-Check: immer schnell (alle 500ms)
             if now - state["last_mtime_check"] > 0.5:
